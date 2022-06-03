@@ -53,22 +53,17 @@ def shuffle(x, y):
     y = y[num]
     return x, y
 
-
 def crop(img):
     im_c = img[4:29, 4:29, :] 
     im_c = cv2.resize(im_c, (32,32))
-    
     return im_c
-
 
 def adjust_gamma(image, gamma):
     # gamma_val = [0.5, 1.5, 2.5]
     invGamma = 1.0 / gamma #np.random.choice(gamma_val)
     table = np.array([((i / 255.0) ** invGamma) * 255
       for i in np.arange(0, 256)]).astype("uint8")
-
     return cv2.LUT(image.astype(np.uint8), table.astype(np.uint8))
-
 
 def rotation(image):
     rows= image.shape[0]
@@ -79,9 +74,7 @@ def rotation(image):
     img_rot = cv2.warpAffine(image,rotatie,(cols,rows))
     # crop
     img_crop = crop(img_rot)
-    
     return img_crop
-
 
 X_train_aug, Y_train_aug = X_all, Y_all
 
@@ -89,7 +82,6 @@ X_aug_1 = [] ### stocheaza doar datele augmentate
 Y_aug_1 = []
 
 for i in range(0, 43):
-    
     class_records = np.where(Y_train_aug==i)[0].size
     # max_records = 2500 # numarul minim de exemple al unei clase (0, 19, 37) pe setul de train
     # if class_records < max_records:
@@ -124,13 +116,11 @@ Y_train = to_one_hot(Y_train_aug)
 # Y_val = to_one_hot(Y_val)
 Y_test = to_one_hot(Y_test)
 
-
 def classes(Y_n):
     Y_nou = np.zeros(len(Y_n))
     for i in range(len(Y_nou)):
         Y_nou[i] = np.argmax(Y_n[i])
     return (Y_nou).astype('uint8')
-
 
 def standard(img):
     return ((img - np.min(img))/(np.max(img)-np.min(img)))-0.5
@@ -139,7 +129,6 @@ X_train = standard(X_train_aug)
 # X_val = standard(X_val)
 X_test = standard(X_test)
 
-
 with tf.device('/gpu:0'): # ruleaza pe GPU
     x_initializer = tf.contrib.layers.xavier_initializer()
     x_placeholder = tf.placeholder(tf.float32, shape=[None, 32, 32, 3]) 
@@ -147,71 +136,68 @@ with tf.device('/gpu:0'): # ruleaza pe GPU
     # lr = tf.placeholder(tf.float32, shape=[]) #pentru a putea ajusta pasul de actualizare in timpul antrenarii
     is_training = tf.placeholder(tf.bool, shape=()) # pentru stratul de Batch Normalization
 
+def mn_v2_reziduu(intrare, expand, squeeze, ksize, strides, padding, reziduu):
+# --------------- 1x1 -> 3x3 -> 1x1
+    k1x1_1 = 1
+    c1x1_1 = int(intrare.get_shape()[3])
+    h1x1_1 = expand
 
+    W1x1_1 = tf.Variable(x_initializer([1,1,int(intrare.get_shape()[3]),expand]))
+    b1x1_1 = tf.Variable(x_initializer([expand]))
+    conv1x1_1 = tf.nn.relu6(tf.compat.v1.layers.batch_normalization(
+                tf.add(tf.nn.conv2d(intrare, W1x1_1, strides=[1,1,1,1], padding="SAME"), b1x1_1), 
+                training=is_training, momentum=0.9, trainable=True))
+        # conv dw 3x3   BN + relu
+    pc1x1_1 =  (k1x1_1*k1x1_1*c1x1_1+1)*h1x1_1
+    cc1x1_1 = (k1x1_1*k1x1_1*c1x1_1+1)*h1x1_1*conv1x1_1.get_shape()[1]*conv1x1_1.get_shape()[2]
+
+
+    k3x3 = ksize
+    c3x3 = int(conv1x1_1.get_shape()[3])
+    h3x3 = 1
+
+    W3x3 = tf.Variable(x_initializer([ksize,ksize,int(conv1x1_1.shape[3]),1]))
+    b3x3 = tf.Variable(x_initializer([expand]))
+    conv3x3 = tf.nn.relu6(tf.compat.v1.layers.batch_normalization(
+                tf.add(tf.nn.depthwise_conv2d(conv1x1_1, W3x3, strides=[1,strides,strides,1], padding=padding), b3x3), 
+                training=is_training, momentum=0.9, trainable=True))
+        # conv pw 1x1   BN
+    pc3x3 =  (k3x3*k3x3*c3x3+1)*h3x3
+    cc3x3 = (k3x3*k3x3*c3x3+1)*h3x3*conv3x3.get_shape()[1]*conv3x3.get_shape()[2]
+
+    k1x1_2 = 1
+    c1x1_2 = int(conv3x3.get_shape()[3])
+    h1x1_2 = squeeze
+
+    W1x1_2 = tf.Variable(x_initializer([1,1,int(conv3x3.get_shape()[3]),squeeze]))
+    b1x1_2 = tf.Variable(x_initializer([squeeze]))
+    conv1x1_2 = tf.compat.v1.layers.batch_normalization(
+                tf.add(tf.nn.conv2d(conv3x3, W1x1_2, strides=[1,1,1,1], padding="SAME"), b1x1_2) + reziduu, 
+                training=is_training, momentum=0.9, trainable=True)
+    pc1x1_2 =  (k1x1_2*k1x1_2*c1x1_2+1)*h1x1_2
+    cc1x1_2 = (k1x1_2*k1x1_2*c1x1_2+1)*h1x1_2*conv1x1_2.get_shape()[1]*conv1x1_2.get_shape()[2]
+
+    m1_pc = pc1x1_1 + pc3x3 + pc1x1_2
+    m1_cc = cc1x1_1 + cc3x3 + cc1x1_2
+    print (' param', m1_pc, ' conn', m1_cc)
+    return conv1x1_2
     
-    def mn_v2_reziduu(intrare, expand, squeeze, ksize, strides, padding, reziduu):
-    # --------------- 1x1 -> 3x3 -> 1x1
-        k1x1_1 = 1
-        c1x1_1 = int(intrare.get_shape()[3])
-        h1x1_1 = expand
-        
-        W1x1_1 = tf.Variable(x_initializer([1,1,int(intrare.get_shape()[3]),expand]))
-        b1x1_1 = tf.Variable(x_initializer([expand]))
-        conv1x1_1 = tf.nn.relu6(tf.compat.v1.layers.batch_normalization(
-                    tf.add(tf.nn.conv2d(intrare, W1x1_1, strides=[1,1,1,1], padding="SAME"), b1x1_1), 
-                    training=is_training, momentum=0.9, trainable=True))
-            # conv dw 3x3   BN + relu
-        pc1x1_1 =  (k1x1_1*k1x1_1*c1x1_1+1)*h1x1_1
-        cc1x1_1 = (k1x1_1*k1x1_1*c1x1_1+1)*h1x1_1*conv1x1_1.get_shape()[1]*conv1x1_1.get_shape()[2]
-
-        
-        k3x3 = ksize
-        c3x3 = int(conv1x1_1.get_shape()[3])
-        h3x3 = 1
-        
-        W3x3 = tf.Variable(x_initializer([ksize,ksize,int(conv1x1_1.shape[3]),1]))
-        b3x3 = tf.Variable(x_initializer([expand]))
-        conv3x3 = tf.nn.relu6(tf.compat.v1.layers.batch_normalization(
-                    tf.add(tf.nn.depthwise_conv2d(conv1x1_1, W3x3, strides=[1,strides,strides,1], padding=padding), b3x3), 
-                    training=is_training, momentum=0.9, trainable=True))
-            # conv pw 1x1   BN
-        pc3x3 =  (k3x3*k3x3*c3x3+1)*h3x3
-        cc3x3 = (k3x3*k3x3*c3x3+1)*h3x3*conv3x3.get_shape()[1]*conv3x3.get_shape()[2]
-
-        k1x1_2 = 1
-        c1x1_2 = int(conv3x3.get_shape()[3])
-        h1x1_2 = squeeze
-        
-        W1x1_2 = tf.Variable(x_initializer([1,1,int(conv3x3.get_shape()[3]),squeeze]))
-        b1x1_2 = tf.Variable(x_initializer([squeeze]))
-        conv1x1_2 = tf.compat.v1.layers.batch_normalization(
-                    tf.add(tf.nn.conv2d(conv3x3, W1x1_2, strides=[1,1,1,1], padding="SAME"), b1x1_2) + reziduu, 
-                    training=is_training, momentum=0.9, trainable=True)
-        pc1x1_2 =  (k1x1_2*k1x1_2*c1x1_2+1)*h1x1_2
-        cc1x1_2 = (k1x1_2*k1x1_2*c1x1_2+1)*h1x1_2*conv1x1_2.get_shape()[1]*conv1x1_2.get_shape()[2]
-
-        m1_pc = pc1x1_1 + pc3x3 + pc1x1_2
-        m1_cc = cc1x1_1 + cc3x3 + cc1x1_2
-        print (' param', m1_pc, ' conn', m1_cc)
-        
-        return conv1x1_2
-    
-    def mn_v1(intrare, expand, strides, padding):
-            # conv dw 3x3   BN + relu
-        shape_c3x3 = [3,3,int(intrare.get_shape()[3]),1] 
-        W3x3 = tf.Variable(x_initializer(shape_c3x3))
-        b3x3 = tf.Variable(x_initializer(shape_c3x3[-1:]))
-        c3x3 = tf.nn.relu(tf.compat.v1.layers.batch_normalization(
-                    tf.add(tf.nn.depthwise_conv2d(intrare, W3x3, strides=[1,strides,strides,1], padding=padding), b3x3), 
-                    training=is_training, momentum=0.9, trainable=True))
-            # conv pw 1x1   BN 
-        shape_c1x1 = [1,1,int(c3x3.get_shape()[3]),expand] 
-        W1x1 = tf.Variable(x_initializer(shape_c1x1))
-        b1x1 = tf.Variable(x_initializer(shape_c1x1[-1:]))
-        c1x1 = tf.nn.relu(tf.compat.v1.layers.batch_normalization(
-                    tf.add(tf.nn.conv2d(c3x3, W1x1, strides=[1,1,1,1], padding="SAME"), b1x1), 
-                    training=is_training, momentum=0.9, trainable=True))
-        return c1x1
+def mn_v1(intrare, expand, strides, padding):
+        # conv dw 3x3   BN + relu
+    shape_c3x3 = [3,3,int(intrare.get_shape()[3]),1] 
+    W3x3 = tf.Variable(x_initializer(shape_c3x3))
+    b3x3 = tf.Variable(x_initializer(shape_c3x3[-1:]))
+    c3x3 = tf.nn.relu(tf.compat.v1.layers.batch_normalization(
+                tf.add(tf.nn.depthwise_conv2d(intrare, W3x3, strides=[1,strides,strides,1], padding=padding), b3x3), 
+                training=is_training, momentum=0.9, trainable=True))
+        # conv pw 1x1   BN 
+    shape_c1x1 = [1,1,int(c3x3.get_shape()[3]),expand] 
+    W1x1 = tf.Variable(x_initializer(shape_c1x1))
+    b1x1 = tf.Variable(x_initializer(shape_c1x1[-1:]))
+    c1x1 = tf.nn.relu(tf.compat.v1.layers.batch_normalization(
+                tf.add(tf.nn.conv2d(c3x3, W1x1, strides=[1,1,1,1], padding="SAME"), b1x1), 
+                training=is_training, momentum=0.9, trainable=True))
+    return c1x1
     
 
     # --------------------------------- C1 -----------------------------------------------------
@@ -346,7 +332,7 @@ with tf.device('/gpu:0'): # ruleaza pe GPU
     
     cost = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(logits=arcface, labels=tf.argmax(y_placeholder, axis=1)))
     
-        # optimisation
+    # optimisation
     # optimizer = tf.compat.v1.train.MomentumOptimizer(learning_rate=lr, momentum=0.9, use_locking=False, 
     #                                                     use_nesterov=False).minimize(loss=cost)
     optimizer = tf.compat.v1.train.AdamOptimizer(learning_rate=lr, beta1=0.9, beta2=0.999, epsilon=0.1).minimize(loss=cost)
@@ -372,8 +358,6 @@ with tf.device('/gpu:0'): # ruleaza pe GPU
     pc_out = (256+1)*43
     print('  param', pc_out, '  conn', pc_out )
 
-    
-    
     
     # ## FUNCTIE COST
     # cross_entropy = tf.nn.softmax_cross_entropy_with_logits_v2(logits = logit, labels = y_placeholder)
